@@ -42,6 +42,7 @@ import org.lwjgl.system.windows.User32;
 import jpcsp.Emulator;
 import jpcsp.Memory;
 import jpcsp.graphics.RE.IRenderingEngine;
+import jpcsp.graphics.RE.directx.DirectX11WrapperFactory;
 import jpcsp.graphics.RE.buffer.IREBufferManager;
 import jpcsp.graphics.capture.CaptureManager;
 import jpcsp.graphics.textures.GETexture;
@@ -575,6 +576,12 @@ public class VideoEngineUtilities {
     }
 
     public static boolean canShareContext() {
+    	if (sceDisplayModule.isUsingDirectX11Renderer() && DirectX11WrapperFactory.isAvailable()) {
+    		// Direct3D 11 has no OpenGL context to share with a rendering thread,
+    		// the GE lists are rendered on the display thread
+    		return false;
+    	}
+
     	switch (Platform.get()) {
 	    	case WINDOWS:
 	    	case LINUX:

@@ -123,7 +123,14 @@ DX11_API void    dx11CopyRenderTargetToTexture(int32_t texture, int32_t level, i
 
 DX11_API void dx11BindRenderTargets(int32_t colorTexture, int32_t depthStencilTexture);
 DX11_API void dx11ReadPixels(int32_t x, int32_t y, int32_t width, int32_t height, int32_t format, int32_t size, void *data);
-DX11_API void dx11Blit(int32_t srcX0, int32_t srcY0, int32_t srcX1, int32_t srcY1, int32_t dstX0, int32_t dstY0, int32_t dstX1, int32_t dstY1, int32_t mask, int32_t linearFilter);
+/*
+ * Copy a rectangle of one texture into another one, rescaling it when the two
+ * rectangles differ in size. A texture handle of 0 designates the back buffer.
+ *
+ * A depth/stencil copy can only be done without rescaling, there is no way to
+ * write a depth/stencil buffer from a pixel shader.
+ */
+DX11_API void dx11Blit(int32_t sourceTexture, int32_t destinationTexture, int32_t srcX0, int32_t srcY0, int32_t srcX1, int32_t srcY1, int32_t dstX0, int32_t dstY0, int32_t dstX1, int32_t dstY1, int32_t depthStencil, int32_t linearFilter);
 
 /*
  * Pipeline states

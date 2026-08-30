@@ -554,6 +554,11 @@ So, to the different options:
     This is useful when your graphics card has a poor or buggy OpenGL driver, which is not
     uncommon on Windows where the vendors put much more effort into their Direct3D drivers.
 
+    When this renderer is selected, Jpcsp does not create an OpenGL context on the
+    display window at all: Direct3D 11 draws into that window through its own swap chain,
+    and the OpenGL driver is never loaded into the process. An emulator that never loads
+    the OpenGL driver cannot be taken down by it, which is the point of this renderer.
+
     Direct3D 11 has no Java binding, so the rendering engine talks to a small native
     wrapper library, jpcsp-directx11.dll, which exposes the Direct3D 11 device through a
     flat handle-based C API. The wrapper sources and their build instructions are in

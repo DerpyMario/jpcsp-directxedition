@@ -21,6 +21,7 @@ import static jpcsp.util.DurationStatistics.collectStatistics;
 
 import jpcsp.HLE.modules.sceDisplay;
 import jpcsp.graphics.VideoEngine;
+import jpcsp.graphics.RE.directx.DirectX11WrapperFactory;
 import jpcsp.graphics.RE.directx.RenderingEngineDirectX11;
 import jpcsp.graphics.RE.software.RESoftware;
 
@@ -36,14 +37,6 @@ public class RenderingEngineFactory {
 
 	private static IRenderingEngine createRenderingEngine(boolean forDisplay) {
 		final boolean isUsingSoftwareRenderer = sceDisplayModule.isUsingSoftwareRenderer();
-
-		if (!forDisplay && directX11RenderingEngine != null) {
-			// A complete rendering pipeline is being rebuilt, e.g. because the
-			// display settings changed: release the previous Direct3D 11 device
-			// before creating a new one on the same window.
-			directX11RenderingEngine.exit();
-			directX11RenderingEngine = null;
-		}
 
 		// Build the rendering pipeline, from the last entry to the first one.
 		IRenderingEngine re;
@@ -122,18 +115,59 @@ public class RenderingEngineFactory {
 			return null;
 		}
 
-		sceDisplay.AWTGLCanvas_sceDisplay canvas = sceDisplayModule.getCanvas();
-		if (canvas == null) {
-			return null;
+		if (directX11RenderingEngine == null) {
+			sceDisplay.AWTGLCanvas_sceDisplay canvas = sceDisplayModule.getCanvas();
+			if (canvas != null) {
+				prepareDirectX11RenderingEngine(canvas.getDisplayWindow(), canvas.getWidth(), canvas.getHeight());
+			}
 		}
 
-		RenderingEngineDirectX11 re = RenderingEngineDirectX11.newInstance(canvas.getDisplayWindow(), canvas.getWidth(), canvas.getHeight());
-		if (re == null) {
+		if (directX11RenderingEngine == null) {
 			VideoEngine.log.warn("The DirectX 11 rendering engine is not available, falling back to OpenGL");
 		}
-		directX11RenderingEngine = re;
 
-		return re;
+		return directX11RenderingEngine;
+	}
+
+	/**
+	 * Create the Direct3D 11 device if it does not exist yet.
+	 *
+	 * This is called by the display canvas before painting a frame: the canvas
+	 * has to know whether Direct3D 11 will really be used before deciding to
+	 * paint without creating an OpenGL context.
+	 *
+	 * @param displayWindow the native window handle receiving the swap chain
+	 * @param width         the current canvas width
+	 * @param height        the current canvas height
+	 * @return true when the GE lists can be rendered with Direct3D 11
+	 */
+	public static boolean prepareDirectX11RenderingEngine(long displayWindow, int width, int height) {
+		if (!sceDisplayModule.isUsingDirectX11Renderer()) {
+			return false;
+		}
+
+		if (directX11RenderingEngine != null) {
+			return true;
+		}
+
+		if (!DirectX11WrapperFactory.isAvailable()) {
+			return false;
+		}
+
+		directX11RenderingEngine = RenderingEngineDirectX11.newInstance(displayWindow, width, height);
+
+		return directX11RenderingEngine != null;
+	}
+
+	/**
+	 * Release the Direct3D 11 device, e.g. when the rendering pipeline is being
+	 * rebuilt after a display settings change.
+	 */
+	public static void releaseDirectX11RenderingEngine() {
+		if (directX11RenderingEngine != null) {
+			directX11RenderingEngine.exit();
+			directX11RenderingEngine = null;
+		}
 	}
 
 	/**
@@ -170,7 +204,12 @@ public class RenderingEngineFactory {
 	 * @return the initial rendering engine
 	 */
 	public static IRenderingEngine createInitialRenderingEngine() {
-		IRenderingEngine re = RenderingEngineLwjgl.newInstance();
+		// With Direct3D 11 there is no OpenGL context on the display canvas,
+		// the OpenGL rendering engine cannot even be instantiated
+		IRenderingEngine re = createDirectX11RenderingEngine();
+		if (re == null) {
+			re = RenderingEngineLwjgl.newInstance();
+		}
 
 		if (enableDebugProxy) {
 			re = new DebugProxy(re);

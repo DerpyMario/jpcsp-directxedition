@@ -16,6 +16,7 @@ along with Jpcsp.  If not, see <http://www.gnu.org/licenses/>.
  */
 package jpcsp.graphics.RE.directx;
 
+import static jpcsp.graphics.GeCommands.TFLT_LINEAR;
 import static jpcsp.graphics.RE.directx.DirectX11.*;
 
 import java.nio.Buffer;
@@ -253,7 +254,10 @@ public class RenderingEngineDirectX11 extends NullRenderingEngine {
 	private int boundElementArrayBuffer;
 	private int boundUniformBuffer;
 	private int currentProgram;
-	private int currentFramebuffer;
+	// OpenGL keeps two framebuffer bindings, one to read from and one to draw
+	// into, and blitFramebuffer() copies from the first into the second
+	private int readFramebuffer;
+	private int drawFramebuffer;
 
 	private int textureMinFilter = 1;
 	private int textureMagFilter = 1;
@@ -326,6 +330,14 @@ public class RenderingEngineDirectX11 extends NullRenderingEngine {
 	}
 
 	/**
+	 * @return a description of the Direct3D 11 device, the counterpart of the
+	 *         OpenGL version string
+	 */
+	public String getVersion() {
+		return String.format("Direct3D feature level %s on '%s'", DirectX11.getFeatureLevelName(wrapper.getFeatureLevel()), wrapper.getAdapterDescription());
+	}
+
+	/**
 	 * Present the back buffer. Called instead of the OpenGL buffer swapping when
 	 * the DirectX 11 rendering engine is active.
 	 */
@@ -340,7 +352,7 @@ public class RenderingEngineDirectX11 extends NullRenderingEngine {
 		if (width > 0 && height > 0 && (width != backBufferWidth || height != backBufferHeight)) {
 			backBufferWidth = width;
 			backBufferHeight = height;
-			if (currentFramebuffer == 0) {
+			if (drawFramebuffer == 0) {
 				targetWidth = width;
 				targetHeight = height;
 			}
@@ -682,7 +694,7 @@ public class RenderingEngineDirectX11 extends NullRenderingEngine {
 
 		if (buffer != null) {
 			int size = sizeInBytes(buffer, textureSize);
-			wrapper.updateTexture(info.handle, level, 0, 0, width, height, getRowPitch(internalFormat, width), size, buffer);
+			wrapper.updateTexture(info.handle, level, 0, 0, width, height, getRowPitch(internalFormat, width, height, size), size, buffer);
 		}
 	}
 
@@ -701,7 +713,7 @@ public class RenderingEngineDirectX11 extends NullRenderingEngine {
 		}
 
 		int size = sizeInBytes(buffer, textureSize);
-		wrapper.updateTexture(info.handle, level, xOffset, yOffset, width, height, getRowPitch(format, width), size, buffer);
+		wrapper.updateTexture(info.handle, level, xOffset, yOffset, width, height, getRowPitch(format, width, height, size), size, buffer);
 	}
 
 	@Override
@@ -819,18 +831,30 @@ public class RenderingEngineDirectX11 extends NullRenderingEngine {
 		states.setSamplerFilter(activeTextureUnit, (minLinear << 4) | (magLinear << 2) | mipLinear);
 	}
 
-	private static int getRowPitch(int pixelFormat, int width) {
-		if (pixelFormat < 0 || pixelFormat >= sizeOfTextureType.length) {
-			return width * 4;
+	/**
+	 * The number of bytes between two rows of an uploaded texture.
+	 *
+	 * Direct3D 11 needs it explicitly, unlike OpenGL which derives it from the
+	 * pixel format and the unpack alignment.
+	 *
+	 * @param size the total number of bytes being uploaded, used for the formats
+	 *             having no whole number of bytes per pixel
+	 */
+	private static int getRowPitch(int pixelFormat, int width, int height, int size) {
+		if (pixelFormat >= 0 && pixelFormat < sizeOfTextureType.length) {
+			int bytesPerPixel = sizeOfTextureType[pixelFormat];
+			if (bytesPerPixel != 0) {
+				return width * bytesPerPixel;
+			}
 		}
 
-		int bytesPerPixel = sizeOfTextureType[pixelFormat];
-		if (bytesPerPixel == 0) {
-			// A 4 bit indexed or a compressed format, the wrapper computes the pitch
-			return 0;
+		// A format having less than one byte per pixel, e.g. 4 bit indexed:
+		// derive the pitch from what is actually being uploaded
+		if (height > 0 && size > 0) {
+			return size / height;
 		}
 
-		return width * bytesPerPixel;
+		return width * 4;
 	}
 
 	//
@@ -1376,9 +1400,21 @@ public class RenderingEngineDirectX11 extends NullRenderingEngine {
 
 	@Override
 	public void bindFramebuffer(int target, int framebuffer) {
-		currentFramebuffer = framebuffer;
+		if (target == RE_FRAMEBUFFER || target == RE_READ_FRAMEBUFFER) {
+			readFramebuffer = framebuffer;
+		}
+		if (target == RE_FRAMEBUFFER || target == RE_DRAW_FRAMEBUFFER) {
+			drawFramebuffer = framebuffer;
+			bindDrawFramebuffer();
+		}
+	}
 
-		FramebufferInfo info = framebuffers.get(Integer.valueOf(framebuffer));
+	/**
+	 * Only the framebuffer bound for drawing becomes the Direct3D 11 render
+	 * target, the one bound for reading is just remembered for blitFramebuffer().
+	 */
+	private void bindDrawFramebuffer() {
+		FramebufferInfo info = framebuffers.get(Integer.valueOf(drawFramebuffer));
 		if (info == null) {
 			// Bind the back buffer
 			targetWidth = backBufferWidth;
@@ -1398,12 +1434,13 @@ public class RenderingEngineDirectX11 extends NullRenderingEngine {
 
 	@Override
 	public int getFramebufferBinding(int target) {
-		return currentFramebuffer;
+		return target == RE_READ_FRAMEBUFFER ? readFramebuffer : drawFramebuffer;
 	}
 
 	@Override
 	public void setFramebufferTexture(int target, int attachment, int texture, int level) {
-		FramebufferInfo info = framebuffers.get(Integer.valueOf(currentFramebuffer));
+		int framebuffer = target == RE_READ_FRAMEBUFFER ? readFramebuffer : drawFramebuffer;
+		FramebufferInfo info = framebuffers.get(Integer.valueOf(framebuffer));
 		if (info == null) {
 			return;
 		}
@@ -1414,7 +1451,9 @@ public class RenderingEngineDirectX11 extends NullRenderingEngine {
 			info.colorTexture = texture;
 		}
 
-		bindFramebuffer(target, currentFramebuffer);
+		if (framebuffer == drawFramebuffer) {
+			bindDrawFramebuffer();
+		}
 	}
 
 	@Override
@@ -1430,7 +1469,43 @@ public class RenderingEngineDirectX11 extends NullRenderingEngine {
 
 	@Override
 	public void blitFramebuffer(int srcX0, int srcY0, int srcX1, int srcY1, int dstX0, int dstY0, int dstX1, int dstY1, int mask, int filter) {
-		wrapper.blit(srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask, filter != 0);
+		boolean depthStencil = (mask & (RE_DEPTH_BUFFER_BIT | RE_STENCIL_BUFFER_BIT)) != 0;
+		int sourceTexture = getFramebufferTexture(readFramebuffer, depthStencil);
+		int destinationTexture = getFramebufferTexture(drawFramebuffer, depthStencil);
+
+		wrapper.blit(sourceTexture, destinationTexture, srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, depthStencil, filter == TFLT_LINEAR);
+
+		// The blit runs its own pipeline inside the wrapper, everything the
+		// rendering pipeline had set has to be pushed again before the next draw
+		invalidateState();
+	}
+
+	/**
+	 * @return the native handle of the color or depth/stencil texture attached
+	 *         to a framebuffer, 0 designating the back buffer
+	 */
+	private int getFramebufferTexture(int framebuffer, boolean depthStencil) {
+		FramebufferInfo info = framebuffers.get(Integer.valueOf(framebuffer));
+		if (info == null) {
+			return DX11_INVALID_HANDLE;
+		}
+
+		return getTextureHandle(depthStencil ? info.depthStencilTexture : info.colorTexture);
+	}
+
+	/**
+	 * Forget everything the wrapper was told about the pipeline state, so that
+	 * it is pushed again before the next draw call.
+	 */
+	private void invalidateState() {
+		states.reset();
+		inputLayoutDirty = true;
+		wrapper.useProgram(currentProgram);
+
+		// The blit has bound its own source texture on the first texture unit
+		for (int i = 0; i < MAX_TEXTURE_UNITS; i++) {
+			wrapper.bindTexture(DX11_STAGE_PIXEL, i, getTextureHandle(boundTextures[i]));
+		}
 	}
 
 	@Override

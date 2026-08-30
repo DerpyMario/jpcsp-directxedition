@@ -31,12 +31,28 @@ by the jpcsp start scripts. Nothing else has to be installed: `d3d11.dll`,
 `d3dcompiler_47.dll` and `dxgi.dll` ship with Windows.
 
 Cross compiling from Linux with MinGW-w64 also works, the Direct3D import
-libraries are part of the MinGW-w64 headers:
+libraries are part of the MinGW-w64 headers. With
+`apt install g++-mingw-w64-x86-64` and this toolchain file:
+
+```cmake
+set(CMAKE_SYSTEM_NAME Windows)
+set(CMAKE_SYSTEM_PROCESSOR x86_64)
+set(CMAKE_C_COMPILER   x86_64-w64-mingw32-gcc)
+set(CMAKE_CXX_COMPILER x86_64-w64-mingw32-g++)
+set(CMAKE_FIND_ROOT_PATH /usr/x86_64-w64-mingw32)
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+```
 
 ```
-cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=<your mingw-w64 toolchain file>
+cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=mingw.cmake
 cmake --build build
 ```
+
+The CI workflow builds the wrapper for both architectures on a Windows runner
+and bundles the result into the published Windows builds, so a release archive
+already contains the DLL.
 
 ## Using it
 
@@ -74,6 +90,13 @@ the DLL installed is therefore harmless.
   source as a full screen triangle generated from `SV_VertexID`, so a rescaling
   blit needs neither a vertex buffer nor an input layout. It runs on its own
   private pipeline, and the caller re-pushes the emulator state afterwards.
+
+## Status
+
+The wrapper compiles and links cleanly (`-Wall -Wextra`, no warnings) and
+exports all of its functions undecorated, which is what JNA needs to bind them.
+It has however never been exercised against a real GPU: expect to have to
+debug it before it draws a correct frame.
 
 ## Not implemented
 

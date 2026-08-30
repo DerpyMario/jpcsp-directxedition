@@ -32,9 +32,13 @@ along with Jpcsp.  If not, see <http://www.gnu.org/licenses/>.
 #include <string>
 #include <vector>
 
+#ifdef _MSC_VER
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "d3dcompiler.lib")
 #pragma comment(lib, "dxgi.lib")
+// IID_ID3D11ShaderReflection, used to reflect the uniforms of a shader
+#pragma comment(lib, "dxguid.lib")
+#endif
 
 namespace {
 
@@ -1175,7 +1179,7 @@ void dx11DeleteTexture(int32_t texture) {
 }
 
 void dx11UpdateTexture(int32_t texture, int32_t level, int32_t x, int32_t y, int32_t width, int32_t height, int32_t rowPitch, int32_t size, const void *data) {
-	if (!hasDevice() || data == NULL) {
+	if (!hasDevice() || data == NULL || width <= 0 || height <= 0) {
 		return;
 	}
 
@@ -1184,7 +1188,28 @@ void dx11UpdateTexture(int32_t texture, int32_t level, int32_t x, int32_t y, int
 		return;
 	}
 
-	UINT pitch = rowPitch > 0 ? (UINT) rowPitch : width * getBytesPerPixel(resource->format);
+	UINT bytesPerPixel = getBytesPerPixel(resource->format);
+	UINT pitch = rowPitch > 0 ? (UINT) rowPitch : width * bytesPerPixel;
+
+	/*
+	 * UpdateSubresource() reads one row of pixels at every multiple of the row
+	 * pitch, so it walks up to this many bytes into the caller's buffer. That
+	 * buffer belongs to the Java heap or to a direct ByteBuffer: reading past
+	 * its end has to be refused here, nothing below will catch it.
+	 */
+	UINT rowBytes = width * bytesPerPixel;
+	if (rowBytes > pitch) {
+		// The caller gave a pitch narrower than one row of the texture format,
+		// which happens for the formats storing less than one byte per pixel.
+		// Trust the pitch: it was computed from the data actually being sent.
+		rowBytes = pitch;
+	}
+
+	UINT required = (height - 1) * pitch + rowBytes;
+	if (size > 0 && (UINT) size < required) {
+		setError("The texture data is smaller than the region being updated");
+		return;
+	}
 
 	D3D11_BOX box;
 	box.left = x;
@@ -1198,7 +1223,7 @@ void dx11UpdateTexture(int32_t texture, int32_t level, int32_t x, int32_t y, int
 }
 
 void dx11UpdateCompressedTexture(int32_t texture, int32_t level, int32_t width, int32_t height, int32_t size, const void *data) {
-	if (!hasDevice() || data == NULL) {
+	if (!hasDevice() || data == NULL || width <= 0 || height <= 0) {
 		return;
 	}
 
@@ -1215,8 +1240,15 @@ void dx11UpdateCompressedTexture(int32_t texture, int32_t level, int32_t width, 
 
 	UINT blocksPerRow = (width + 3) / 4;
 	UINT pitch = blocksPerRow * blockSize;
+	UINT blockRows = (height + 3) / 4;
 
-	ctx->deviceContext->UpdateSubresource(resource->texture, level, NULL, data, pitch, pitch * ((height + 3) / 4));
+	/* As in dx11UpdateTexture(), never read past the caller's buffer */
+	if (size > 0 && (UINT) size < pitch * blockRows) {
+		setError("The compressed texture data is smaller than the texture level");
+		return;
+	}
+
+	ctx->deviceContext->UpdateSubresource(resource->texture, level, NULL, data, pitch, pitch * blockRows);
 }
 
 void dx11ReadTexture(int32_t texture, int32_t level, int32_t size, void *data) {
@@ -1303,6 +1335,9 @@ void dx11GenerateMipmaps(int32_t texture) {
 }
 
 int32_t dx11GetTextureLevelParameter(int32_t texture, int32_t level, int32_t parameter) {
+	/* The parameters answered here are the same for every mipmap level */
+	(void) level;
+
 	TextureResource *resource = ctx == NULL ? NULL : find(ctx->textures, texture);
 	if (resource == NULL) {
 		return 0;

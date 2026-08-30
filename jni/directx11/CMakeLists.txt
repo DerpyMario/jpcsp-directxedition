@@ -12,7 +12,7 @@
 #   cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=<mingw toolchain>
 #   cmake --build build
 
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.13)
 project(jpcsp-directx11 CXX)
 
 if(NOT WIN32)
@@ -26,7 +26,8 @@ add_library(jpcsp-directx11 SHARED jpcsp_directx11.cpp)
 # JNA looks the library up by its plain name, keep the "lib" prefix out
 set_target_properties(jpcsp-directx11 PROPERTIES PREFIX "" OUTPUT_NAME "jpcsp-directx11")
 
-target_link_libraries(jpcsp-directx11 PRIVATE d3d11 d3dcompiler dxgi)
+# dxguid provides IID_ID3D11ShaderReflection, needed to reflect the shader uniforms
+target_link_libraries(jpcsp-directx11 PRIVATE d3d11 d3dcompiler dxgi dxguid)
 
 if(MSVC)
 	target_compile_options(jpcsp-directx11 PRIVATE /W3)

@@ -19,6 +19,9 @@ package jpcsp.graphics.RE;
 import static jpcsp.HLE.Modules.sceDisplayModule;
 import static jpcsp.util.DurationStatistics.collectStatistics;
 
+import jpcsp.HLE.modules.sceDisplay;
+import jpcsp.graphics.VideoEngine;
+import jpcsp.graphics.RE.directx.RenderingEngineDirectX11;
 import jpcsp.graphics.RE.software.RESoftware;
 
 /**
@@ -29,19 +32,34 @@ public class RenderingEngineFactory {
 	private static final boolean enableDebugProxy = false;
 	private static final boolean enableCheckErrorsProxy = false;
 	private static final boolean enableStatisticsProxy = false;
+	private static RenderingEngineDirectX11 directX11RenderingEngine;
 
 	private static IRenderingEngine createRenderingEngine(boolean forDisplay) {
 		final boolean isUsingSoftwareRenderer = sceDisplayModule.isUsingSoftwareRenderer();
 
+		if (!forDisplay && directX11RenderingEngine != null) {
+			// A complete rendering pipeline is being rebuilt, e.g. because the
+			// display settings changed: release the previous Direct3D 11 device
+			// before creating a new one on the same window.
+			directX11RenderingEngine.exit();
+			directX11RenderingEngine = null;
+		}
+
 		// Build the rendering pipeline, from the last entry to the first one.
 		IRenderingEngine re;
+		boolean isUsingDirectX11 = false;
 
 		if (isUsingSoftwareRenderer) {
 			// RenderingEngine using a complete software implementation, i.e. not using the GPU
 			re = new RESoftware();
 		} else {
-			// RenderingEngine performing the OpenGL calls by using the LWJGL library
-			re = RenderingEngineLwjgl.newInstance();
+			re = createDirectX11RenderingEngine();
+			if (re != null) {
+				isUsingDirectX11 = true;
+			} else {
+				// RenderingEngine performing the OpenGL calls by using the LWJGL library
+				re = RenderingEngineLwjgl.newInstance();
+			}
 		}
 
 		if (enableCheckErrorsProxy) {
@@ -59,7 +77,10 @@ public class RenderingEngineFactory {
 		}
 
 		if (!isUsingSoftwareRenderer) {
-			if (REShader.useShaders(re)) {
+			if (isUsingDirectX11) {
+				// Direct3D 11 has no fixed-function pipeline, the shaders are mandatory
+				re = new REShader(re);
+			} else if (REShader.useShaders(re)) {
 				// RenderingEngine using shaders
 				re = new REShader(re);
 			} else {
@@ -84,6 +105,43 @@ public class RenderingEngineFactory {
 
 		// Return the first entry in the pipeline
 		return re;
+	}
+
+	/**
+	 * Create the DirectX 11 rendering engine when it has been selected in the
+	 * settings and Direct3D 11 is usable on this system.
+	 *
+	 * The Direct3D 11 swap chain is created on the same native window as the
+	 * display canvas: the OpenGL context of the canvas stays unused, only its
+	 * window handle is needed.
+	 *
+	 * @return the DirectX 11 rendering engine, or null to fall back to OpenGL
+	 */
+	private static IRenderingEngine createDirectX11RenderingEngine() {
+		if (!sceDisplayModule.isUsingDirectX11Renderer()) {
+			return null;
+		}
+
+		sceDisplay.AWTGLCanvas_sceDisplay canvas = sceDisplayModule.getCanvas();
+		if (canvas == null) {
+			return null;
+		}
+
+		RenderingEngineDirectX11 re = RenderingEngineDirectX11.newInstance(canvas.getDisplayWindow(), canvas.getWidth(), canvas.getHeight());
+		if (re == null) {
+			VideoEngine.log.warn("The DirectX 11 rendering engine is not available, falling back to OpenGL");
+		}
+		directX11RenderingEngine = re;
+
+		return re;
+	}
+
+	/**
+	 * @return the DirectX 11 rendering engine currently rendering the GE lists,
+	 *         or null when the GE lists are not rendered with Direct3D 11
+	 */
+	public static RenderingEngineDirectX11 getDirectX11RenderingEngine() {
+		return directX11RenderingEngine;
 	}
 
 	/**

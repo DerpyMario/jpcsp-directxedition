@@ -7,6 +7,10 @@ Settings.properties
 #External software renderer dynamic link libraries
 lib/windows-x86/software-ge-renderer*.dll
 lib/windows-amd64/software-ge-renderer*.dll
+#DirectX 11 wrapper dynamic link library
+lib/windows-x86/jpcsp-directx11.dll
+lib/windows-amd64/jpcsp-directx11.dll
+jni/directx11/build/
 #Virtual memory stick
 ms0/PSP/GAME/*
 !ms0/PSP/GAME/JpcspConnector/

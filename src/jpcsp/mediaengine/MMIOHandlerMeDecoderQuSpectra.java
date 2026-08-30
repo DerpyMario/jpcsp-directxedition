@@ -90,6 +90,25 @@ public class MMIOHandlerMeDecoderQuSpectra extends MMIOHandlerMeBase {
 		super.write(stream);
 	}
 
+	/**
+	 * Decode the quantized spectra described by the registers.
+	 *
+	 * The bit stream and the VLC tables are located by addresses written by the
+	 * Media Engine firmware. When one of them is wrong, or when the bit index
+	 * runs past the end of the bit stream, the reads walk outside of the
+	 * emulated memory. The memory implementation used by jpcsp performs no
+	 * bound check for speed, so the resulting exception is caught here: a
+	 * failed decoding must not kill the Media Engine thread, which the main CPU
+	 * would then wait for forever.
+	 */
+	private void decode() {
+		try {
+			decodeQuSpectra();
+		} catch (IndexOutOfBoundsException e) {
+			log.error(String.format("MMIOHandlerMeDecoderQuSpectra: aborting the decoding, it is reading outside of the memory (inputBuffer=0x%08X, bitIndex=0x%X, vlcTableCode=0x%08X, vlsTableN=0x%08X, outputBuffer=0x%08X, numSpecs=0x%X)", inputBuffer, bitIndex, vlcTableCode, vlsTableN, outputBuffer, numSpecs), e);
+		}
+	}
+
 	private void setControl(int control) {
 		// Flag 0x1 is "running"?
 		// Flag 0x2 is "error"?
@@ -97,7 +116,7 @@ public class MMIOHandlerMeDecoderQuSpectra extends MMIOHandlerMeBase {
 		this.control = control & ~0x3;
 
 		if ((control & 0x1) != 0) {
-			decodeQuSpectra();
+			decode();
 		}
 	}
 

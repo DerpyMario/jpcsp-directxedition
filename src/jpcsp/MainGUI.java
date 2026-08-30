@@ -2372,13 +2372,61 @@ private void ejectMsActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST
     	}
     }
 
+    // LWJGL 3.2.3 only knows the JNI versions up to the one introduced by Java 18
+    private static final int firstUnsupportedJavaVersion = 19;
+
     private void logStart() {
         log.info(String.format("Java version: %s (%s) on %s", System.getProperty("java.version"), System.getProperty("java.runtime.version"), System.getProperty("os.name")));
         log.info(String.format("Java library path: %s", System.getProperty("java.library.path")));
 
+        logJavaVersionCompatibility();
+
         logConfigurationSettings();
 
         logDirectory(Settings.getInstance().getDirectoryMapping("flash0"));
+    }
+
+    /**
+     * Warn when running on a Java version newer than the one the bundled LWJGL
+     * supports.
+     *
+     * LWJGL 3.2.3 patches the JNI function table to store its thread local
+     * state, and it only knows the JNI versions up to the one of Java 18. On a
+     * newer Java it logs "Unsupported JNI version detected, this may result in
+     * a crash" and keeps going with a JNI environment it does not fully
+     * understand, which shows up much later as a native crash inside the
+     * graphics driver.
+     */
+    private void logJavaVersionCompatibility() {
+        int javaVersion = getJavaMajorVersion();
+        if (javaVersion >= firstUnsupportedJavaVersion) {
+            log.warn(String.format("Java %d is newer than the Java version supported by the LWJGL library used by Jpcsp (up to Java %d).", javaVersion, firstUnsupportedJavaVersion - 1));
+            log.warn("Watch out for a '[LWJGL] [ThreadLocalUtil] Unsupported JNI version detected' message on the console: it means LWJGL is running with a JNI environment it does not understand, which can crash Jpcsp inside the graphics driver.");
+            log.warn("Running Jpcsp on Java 17 or Java 21 is recommended.");
+        }
+    }
+
+    /**
+     * @return the major version of the running Java, e.g. 8, 17 or 25
+     */
+    private static int getJavaMajorVersion() {
+        String version = System.getProperty("java.specification.version", "");
+
+        // "1.8" for Java 8 and below, "9" and above for the newer ones
+        if (version.startsWith("1.")) {
+            version = version.substring(2);
+        }
+
+        int dot = version.indexOf('.');
+        if (dot >= 0) {
+            version = version.substring(0, dot);
+        }
+
+        try {
+            return Integer.parseInt(version.trim());
+        } catch (NumberFormatException e) {
+            return 0;
+        }
     }
 
     private void logStartIso(UmdIsoReader iso) {

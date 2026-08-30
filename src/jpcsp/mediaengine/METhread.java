@@ -32,6 +32,9 @@ public class METhread extends Thread {
 	private volatile boolean exit;
 	private MEProcessor processor;
 	private final Semaphore sync;
+	// Do not flood the log when the Media Engine keeps failing
+	private static final int maxLoggedErrors = 10;
+	private int errorCount;
 
 	public static METhread getInstance() {
 		if (instance == null) {
@@ -68,7 +71,20 @@ public class METhread extends Thread {
 		setLog4jMDC();
 		while (!exit) {
 			if (waitForSync(100)) {
-				processor.run();
+				try {
+					processor.run();
+				} catch (RuntimeException e) {
+					// A bug in the Media Engine emulation must not kill this
+					// thread: the main CPU would then wait forever for a Media
+					// Engine which never answers again.
+					if (errorCount < maxLoggedErrors) {
+						errorCount++;
+						processor.getLogger().error("Error while running the Media Engine", e);
+						if (errorCount >= maxLoggedErrors) {
+							processor.getLogger().error("Further Media Engine errors will not be logged");
+						}
+					}
+				}
 			}
 		}
 	}

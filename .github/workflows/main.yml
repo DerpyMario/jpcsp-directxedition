@@ -1,14 +1,6 @@
 name: CI
 
-on:
-  push:
-    branches: [ master ]
-    tags:
-      - '*'
-  pull_request:
-    branches: [ master ]
-  # Allows building any branch on demand, e.g. to check the Direct3D 11 wrapper
-  workflow_dispatch:
+on: [workflow_dispatch]
 
 jobs:
   # The Direct3D 11 wrapper backing the DirectX 11 renderer. It is Windows only

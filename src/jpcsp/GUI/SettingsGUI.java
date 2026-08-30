@@ -121,8 +121,9 @@ public class SettingsGUI extends javax.swing.JFrame {
         setBoolFromSettings(saveStencilToMemory, "emu.saveStencilToMemory");
         setBoolFromSettings(useSoftwareRenderer, "emu.useSoftwareRenderer");
         setBoolFromSettings(useExternalSoftwareRenderer, "emu.useExternalSoftwareRenderer");
+        setBoolFromSettings(useDirectX11Renderer, "emu.useDirectX11Renderer");
         //set opengl render selected if none of the other renders are selected
-        if (!useSoftwareRenderer.isSelected() && !useExternalSoftwareRenderer.isSelected()) {
+        if (!useSoftwareRenderer.isSelected() && !useExternalSoftwareRenderer.isSelected() && !useDirectX11Renderer.isSelected()) {
             useOpenglRenderer.setSelected(true);
         }
 
@@ -249,8 +250,9 @@ public class SettingsGUI extends javax.swing.JFrame {
         setBoolToSettings(saveStencilToMemory, "emu.saveStencilToMemory");
         setBoolToSettings(useSoftwareRenderer, "emu.useSoftwareRenderer");
         setBoolToSettings(useExternalSoftwareRenderer, "emu.useExternalSoftwareRenderer");
+        setBoolToSettings(useDirectX11Renderer, "emu.useDirectX11Renderer");
         //set opengl render selected if none of the other renders are selected
-        if (!useSoftwareRenderer.isSelected() && !useExternalSoftwareRenderer.isSelected()) {
+        if (!useSoftwareRenderer.isSelected() && !useExternalSoftwareRenderer.isSelected() && !useDirectX11Renderer.isSelected()) {
             useOpenglRenderer.setSelected(true);
         }
 
@@ -519,6 +521,7 @@ public class SettingsGUI extends javax.swing.JFrame {
         saveStencilToMemory = new javax.swing.JCheckBox();
         renderPanel = new javax.swing.JPanel();
         useOpenglRenderer = new javax.swing.JRadioButton();
+        useDirectX11Renderer = new javax.swing.JRadioButton();
         useSoftwareRenderer = new javax.swing.JRadioButton();
         useExternalSoftwareRenderer = new javax.swing.JRadioButton();
         MemoryPanel = new javax.swing.JPanel();
@@ -888,6 +891,9 @@ public class SettingsGUI extends javax.swing.JFrame {
         buttonGroup2.add(useOpenglRenderer);
         useOpenglRenderer.setText(bundle.getString("SettingsGUI.useOpenglRenderer.text")); // NOI18N
 
+        buttonGroup2.add(useDirectX11Renderer);
+        useDirectX11Renderer.setText(bundle.getString("SettingsGUI.useDirectX11Renderer.text")); // NOI18N
+
         buttonGroup2.add(useSoftwareRenderer);
         useSoftwareRenderer.setText(bundle.getString("SettingsGUI.useSoftwareRenderer.text")); // NOI18N
 
@@ -902,6 +908,7 @@ public class SettingsGUI extends javax.swing.JFrame {
                 .addGroup(renderPanelLayout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
                     .addComponent(useExternalSoftwareRenderer)
                     .addComponent(useOpenglRenderer)
+                    .addComponent(useDirectX11Renderer)
                     .addComponent(useSoftwareRenderer))
                 .addGap(0, 437, Short.MAX_VALUE))
         );
@@ -910,6 +917,8 @@ public class SettingsGUI extends javax.swing.JFrame {
             .addGroup(javax.swing.GroupLayout.Alignment.TRAILING, renderPanelLayout.createSequentialGroup()
                 .addContainerGap()
                 .addComponent(useOpenglRenderer)
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                .addComponent(useDirectX11Renderer)
                 .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                 .addComponent(useSoftwareRenderer)
                 .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
@@ -1525,6 +1534,7 @@ public class SettingsGUI extends javax.swing.JFrame {
     private javax.swing.JCheckBox useCompiler;
     private javax.swing.JCheckBox useDebugFont;
     private javax.swing.JCheckBox useDebugMemory;
+    private javax.swing.JRadioButton useDirectX11Renderer;
     private javax.swing.JRadioButton useExternalSoftwareRenderer;
     private javax.swing.JRadioButton useOpenglRenderer;
     private javax.swing.JRadioButton useSoftwareRenderer;

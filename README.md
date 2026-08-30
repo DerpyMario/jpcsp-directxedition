@@ -51,6 +51,8 @@ Please keep in mind that JPCSP does not support or endorse piracy.
 
 - Added support for an external software rendering engine;
 
+- Added a DirectX 11 rendering engine, as an alternative to OpenGL on Windows;
+
 - Added a Java implementation for the audio decoding (Atrac3, Atrac3+, MP3 and AAC)
    which is improving the compatibility and makes the use of an external audio
    decoder obsolete.
@@ -547,6 +549,24 @@ So, to the different options:
     renderer but not all PSP features are supported. Also, bugs in several graphic
     card drivers have been reported (e.g. for AMD and Intel graphic cards) prevent
     a proper rendering in some cases.
+- Use DirectX 11 Renderer:
+    use Direct3D 11, i.e. your GPU, to perform the rendering, as an alternative to OpenGL.
+    This is useful when your graphics card has a poor or buggy OpenGL driver, which is not
+    uncommon on Windows where the vendors put much more effort into their Direct3D drivers.
+
+    Direct3D 11 has no Java binding, so the rendering engine talks to a small native
+    wrapper library, jpcsp-directx11.dll, which exposes the Direct3D 11 device through a
+    flat handle-based C API. The wrapper sources and their build instructions are in
+    jni/directx11. Place the resulting DLL in lib/windows-amd64 (or lib/windows-x86 for a
+    32 bit JVM). When the DLL is missing, Jpcsp logs one line and falls back to OpenGL,
+    so selecting this option without the wrapper installed is harmless.
+
+    The GLSL shaders of the emulator are translated to HLSL at runtime, and the PSP
+    primitives which Direct3D 11 does not have (triangle fans and quads) are expanded into
+    triangle lists. Shaders are mandatory: Direct3D 11 has no fixed-function pipeline.
+    This renderer is Windows only, and newer than the OpenGL one, so expect a lower
+    compatibility for now.
+
 - Use Internal Software Rendering:
     this option enables the emulation of all the PSP graphics in software by the emulator.
     The hardware of your graphics card is not used (well, it will just be used

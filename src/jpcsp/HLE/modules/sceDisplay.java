@@ -97,6 +97,7 @@ import jpcsp.graphics.VideoEngineUtilities;
 import jpcsp.graphics.RE.IRenderingEngine;
 import jpcsp.graphics.RE.RenderingEngineFactory;
 import jpcsp.graphics.RE.RenderingEngineLwjgl;
+import jpcsp.graphics.RE.directx.RenderingEngineDirectX11;
 import jpcsp.graphics.RE.externalge.ExternalGE;
 import jpcsp.graphics.capture.CaptureManager;
 import jpcsp.graphics.textures.GETexture;
@@ -195,7 +196,9 @@ public class sceDisplay extends HLEModule {
                     if (isUsingSoftwareRenderer()) {
                         reDisplay = RenderingEngineFactory.createRenderingEngineForDisplay();
                         reDisplay.setGeContext(videoEngine.getContext());
-                    } else if (ExternalGE.isActive()) {
+                    } else if (ExternalGE.isActive() || RenderingEngineFactory.getDirectX11RenderingEngine() != null) {
+                        // Direct3D 11 owns a single device and a single swap
+                        // chain on the display window, the display shares them
                         reDisplay = re;
                     } else {
                         reDisplay = RenderingEngineFactory.createRenderingEngineForDisplay();
@@ -207,6 +210,12 @@ public class sceDisplay extends HLEModule {
                     re = RenderingEngineFactory.createInitialRenderingEngine();
                     reDisplay = re;
                 }
+            }
+
+            RenderingEngineDirectX11 directX11 = RenderingEngineFactory.getDirectX11RenderingEngine();
+            if (directX11 != null) {
+                // Keep the Direct3D 11 swap chain in sync with the canvas size
+                directX11.resize(canvas.getWidth(), canvas.getHeight());
             }
 
             lockDisplay();
@@ -361,10 +370,17 @@ public class sceDisplay extends HLEModule {
 
             setInsideRendering(false);
 
-            // Perform OpenGL double buffering
+            // Present the rendered frame
             if (doSwapBuffers) {
                 paintFrameCount++;
-                canvas.swapBuffers();
+                if (directX11 != null) {
+                    // Direct3D 11 presents its own swap chain, the OpenGL back
+                    // buffer of the canvas is left untouched: swapping it would
+                    // overwrite the Direct3D 11 output on the same window.
+                    directX11.present(false);
+                } else {
+                    canvas.swapBuffers();
+                }
             }
 
             // Update the current FPS every second
@@ -413,6 +429,7 @@ public class sceDisplay extends HLEModule {
 
     private boolean saveGEToTexture = false;
     private boolean useSoftwareRenderer = false;
+    private boolean useDirectX11Renderer = false;
     private boolean saveStencilToMemory = false;
     private static final boolean useDebugGL = false;
     private static final String resizeScaleFactorSettings = "emu.graphics.resizeScaleFactor";
@@ -510,6 +527,14 @@ public class sceDisplay extends HLEModule {
         @Override
         protected void settingsValueChanged(boolean value) {
             setUseSoftwareRenderer(value);
+        }
+    }
+
+    private class DirectX11RendererSettingsListener extends AbstractBoolSettingsListener {
+
+        @Override
+        protected void settingsValueChanged(boolean value) {
+            setUseDirectX11Renderer(value);
         }
     }
 
@@ -950,6 +975,7 @@ public class sceDisplay extends HLEModule {
         }
 
         setSettingsListener("emu.useSoftwareRenderer", new SoftwareRendererSettingsListener());
+        setSettingsListener("emu.useDirectX11Renderer", new DirectX11RendererSettingsListener());
         setSettingsListener("emu.saveStencilToMemory", new SaveStencilToMemorySettingsListener());
 
         super.start();
@@ -1203,6 +1229,22 @@ public class sceDisplay extends HLEModule {
 
     public boolean isUsingSoftwareRenderer() {
         return useSoftwareRenderer;
+    }
+
+    public void setUseDirectX11Renderer(boolean useDirectX11Renderer) {
+        this.useDirectX11Renderer = useDirectX11Renderer;
+
+        if (isStarted) {
+            resetDisplaySettings = true;
+        }
+    }
+
+    /**
+     * @return true when the GE lists have to be rendered with Direct3D 11
+     *         instead of OpenGL
+     */
+    public boolean isUsingDirectX11Renderer() {
+        return useDirectX11Renderer && !useSoftwareRenderer && !ExternalGE.isActive();
     }
 
     public void rotate(int angleId) {

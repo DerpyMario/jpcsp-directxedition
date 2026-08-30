@@ -2445,7 +2445,8 @@ private void ejectMsActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST
         logConfigurationSettingString("SettingsGUI.nicknameLabel.text", sceUtility.SYSTEMPARAM_SETTINGS_OPTION_NICKNAME, true, true);
 
         logConfigurationPanel("SettingsGUI.VideoPanel.title");
-        logConfigurationSettingBool("SettingsGUI.useOpenglRenderer.text", !Settings.getInstance().readBool("emu.useSoftwareRenderer") && !Settings.getInstance().readBool("emu.useExternalSoftwareRenderer"), false, false);
+        logConfigurationSettingBool("SettingsGUI.useOpenglRenderer.text", !Settings.getInstance().readBool("emu.useSoftwareRenderer") && !Settings.getInstance().readBool("emu.useExternalSoftwareRenderer") && !Settings.getInstance().readBool("emu.useDirectX11Renderer"), false, false);
+        logConfigurationSettingBool("SettingsGUI.useDirectX11Renderer.text", "emu.useDirectX11Renderer", false, false);
         logConfigurationSettingBool("SettingsGUI.useSoftwareRenderer.text", "emu.useSoftwareRenderer", false, false);
         logConfigurationSettingBool("SettingsGUI.useExternalSoftwareRenderer.text", "emu.useExternalSoftwareRenderer", false, false);
         logConfigurationSettingBool("SettingsGUI.disableVBOCheck.text", "emu.disablevbo", false, true);

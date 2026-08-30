@@ -86,7 +86,7 @@ public class DirectX11NativeWrapper implements IDirectX11Wrapper {
 
 		void dx11BindRenderTargets(int colorTexture, int depthStencilTexture);
 		void dx11ReadPixels(int x, int y, int width, int height, int format, int size, Buffer data);
-		void dx11Blit(int srcX0, int srcY0, int srcX1, int srcY1, int dstX0, int dstY0, int dstX1, int dstY1, int mask, int linearFilter);
+		void dx11Blit(int sourceTexture, int destinationTexture, int srcX0, int srcY0, int srcX1, int srcY1, int dstX0, int dstY0, int dstX1, int dstY1, int depthStencil, int linearFilter);
 
 		void dx11SetBlendState(int enabled, int srcRGB, int dstRGB, int opRGB, int srcAlpha, int dstAlpha, int opAlpha, int writeMask, float red, float green, float blue, float alpha);
 		void dx11SetDepthStencilState(int depthEnabled, int depthWrite, int depthFunc, int stencilEnabled, int stencilReadMask, int stencilWriteMask, int stencilFunc, int stencilRef, int failOp, int depthFailOp, int passOp);
@@ -146,7 +146,10 @@ public class DirectX11NativeWrapper implements IDirectX11Wrapper {
 		try {
 			api = Native.load(libraryName, Api.class);
 		} catch (UnsatisfiedLinkError e) {
-			log.info(String.format("The DirectX 11 wrapper library '%s' is not available: %s", libraryName, e.getMessage()));
+			log.warn(String.format("The DirectX 11 wrapper library '%s.dll' could not be loaded from the java.library.path (%s). Build it from jni/directx11 and copy it into lib/windows-amd64 (lib/windows-x86 for a 32 bit JVM).", libraryName, System.getProperty("java.library.path")));
+			if (log.isDebugEnabled()) {
+				log.debug(String.format("Loading '%s' failed: %s", libraryName, e.getMessage()));
+			}
 			return false;
 		} catch (NoClassDefFoundError e) {
 			log.info(String.format("The DirectX 11 wrapper library '%s' cannot be loaded: %s", libraryName, e.getMessage()));
@@ -358,8 +361,8 @@ public class DirectX11NativeWrapper implements IDirectX11Wrapper {
 	}
 
 	@Override
-	public void blit(int srcX0, int srcY0, int srcX1, int srcY1, int dstX0, int dstY0, int dstX1, int dstY1, int mask, boolean linearFilter) {
-		api.dx11Blit(srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask, linearFilter ? 1 : 0);
+	public void blit(int sourceTexture, int destinationTexture, int srcX0, int srcY0, int srcX1, int srcY1, int dstX0, int dstY0, int dstX1, int dstY1, boolean depthStencil, boolean linearFilter) {
+		api.dx11Blit(sourceTexture, destinationTexture, srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, depthStencil ? 1 : 0, linearFilter ? 1 : 0);
 	}
 
 	@Override

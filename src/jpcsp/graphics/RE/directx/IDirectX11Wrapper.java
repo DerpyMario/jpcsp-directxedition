@@ -124,7 +124,17 @@ public interface IDirectX11Wrapper {
 
 	public void bindRenderTargets(int colorTexture, int depthStencilTexture);
 	public void readPixels(int x, int y, int width, int height, int format, int size, Buffer data);
-	public void blit(int srcX0, int srcY0, int srcX1, int srcY1, int dstX0, int dstY0, int dstX1, int dstY1, int mask, boolean linearFilter);
+
+	/**
+	 * Copy a rectangle from one texture into another one, rescaling it when the
+	 * two rectangles have different sizes.
+	 *
+	 * @param sourceTexture      the texture to read from, 0 for the back buffer
+	 * @param destinationTexture the texture to write to, 0 for the back buffer
+	 * @param depthStencil       true when copying a depth/stencil buffer, which
+	 *                           can only be done without rescaling
+	 */
+	public void blit(int sourceTexture, int destinationTexture, int srcX0, int srcY0, int srcX1, int srcY1, int dstX0, int dstY0, int dstX1, int dstY1, boolean depthStencil, boolean linearFilter);
 
 	//
 	// Pipeline states

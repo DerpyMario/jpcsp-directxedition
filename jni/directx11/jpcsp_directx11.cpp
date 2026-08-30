@@ -32,9 +32,13 @@ along with Jpcsp.  If not, see <http://www.gnu.org/licenses/>.
 #include <string>
 #include <vector>
 
+#ifdef _MSC_VER
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "d3dcompiler.lib")
 #pragma comment(lib, "dxgi.lib")
+// IID_ID3D11ShaderReflection, used to reflect the uniforms of a shader
+#pragma comment(lib, "dxguid.lib")
+#endif
 
 namespace {
 
@@ -109,6 +113,23 @@ struct QueryResource {
 	bool resultRead;
 };
 
+/*
+ * The private pipeline used to rescale a blit. Direct3D 11 has no equivalent of
+ * glBlitFramebuffer(), a scaling copy has to be drawn.
+ */
+struct BlitPipeline {
+	ID3D11VertexShader *vertexShader;
+	ID3D11PixelShader *pixelShader;
+	ID3D11Buffer *constantBuffer;
+	ID3D11SamplerState *pointSampler;
+	ID3D11SamplerState *linearSampler;
+	ID3D11BlendState *blendState;
+	ID3D11DepthStencilState *depthStencilState;
+	ID3D11RasterizerState *rasterizerState;
+	bool initialized;
+	bool failed;
+};
+
 struct InputElement {
 	int location;
 	int size;
@@ -146,6 +167,7 @@ struct Context {
 	std::map<std::string, ID3D11InputLayout *> inputLayouts;
 
 	ProgramResource *currentProgram;
+	BlitPipeline blit;
 	std::vector<InputElement> pendingInputElements;
 	D3D11_PRIMITIVE_TOPOLOGY currentTopology;
 	ID3D11RenderTargetView *currentRenderTargetView;
@@ -505,6 +527,187 @@ void bindProgramShaders(ProgramResource *program) {
 	ctx->deviceContext->DSSetShader(program->stages[DX11_STAGE_DOMAIN] == NULL ? NULL : (ID3D11DomainShader *) program->stages[DX11_STAGE_DOMAIN]->shader, NULL, 0);
 }
 
+/*
+ * The shaders drawing a rescaled copy. The full screen triangle is generated
+ * from the vertex index, so the blit needs neither a vertex buffer nor an input
+ * layout.
+ */
+static const char *blitShaderSource =
+	"cbuffer BlitConstants : register(b0) { float4 uvScaleOffset; };\n"
+	"Texture2D blitSource : register(t0);\n"
+	"SamplerState blitSampler : register(s0);\n"
+	"struct VSOut { float4 position : SV_Position; float2 uv : TEXCOORD0; };\n"
+	"VSOut vsMain(uint id : SV_VertexID) {\n"
+	"    VSOut output;\n"
+	"    float2 corner = float2((id << 1) & 2, id & 2);\n"
+	"    output.position = float4(corner * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);\n"
+	"    output.uv = corner * uvScaleOffset.xy + uvScaleOffset.zw;\n"
+	"    return output;\n"
+	"}\n"
+	"float4 psMain(VSOut input) : SV_Target {\n"
+	"    return blitSource.Sample(blitSampler, input.uv);\n"
+	"}\n";
+
+ID3D11SamplerState *createBlitSampler(D3D11_FILTER filter) {
+	D3D11_SAMPLER_DESC desc;
+	ZeroMemory(&desc, sizeof(desc));
+	desc.Filter = filter;
+	desc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
+	desc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
+	desc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+	desc.MaxLOD = D3D11_FLOAT32_MAX;
+	desc.ComparisonFunc = D3D11_COMPARISON_NEVER;
+
+	ID3D11SamplerState *sampler = NULL;
+	ctx->device->CreateSamplerState(&desc, &sampler);
+
+	return sampler;
+}
+
+bool initBlitPipeline() {
+	if (ctx->blit.initialized) {
+		return true;
+	}
+	if (ctx->blit.failed) {
+		return false;
+	}
+
+	ctx->blit.failed = true;
+
+	ID3DBlob *vertexBytecode = NULL;
+	ID3DBlob *pixelBytecode = NULL;
+	ID3DBlob *errors = NULL;
+	size_t length = strlen(blitShaderSource);
+
+	HRESULT hr = D3DCompile(blitShaderSource, length, NULL, NULL, NULL, "vsMain", "vs_4_0", 0, 0, &vertexBytecode, &errors);
+	if (FAILED(hr)) {
+		setError("Cannot compile the blit vertex shader", hr);
+		release(errors);
+		return false;
+	}
+	release(errors);
+
+	hr = D3DCompile(blitShaderSource, length, NULL, NULL, NULL, "psMain", "ps_4_0", 0, 0, &pixelBytecode, &errors);
+	if (FAILED(hr)) {
+		setError("Cannot compile the blit pixel shader", hr);
+		release(errors);
+		release(vertexBytecode);
+		return false;
+	}
+	release(errors);
+
+	hr = ctx->device->CreateVertexShader(vertexBytecode->GetBufferPointer(), vertexBytecode->GetBufferSize(), NULL, &ctx->blit.vertexShader);
+	if (SUCCEEDED(hr)) {
+		hr = ctx->device->CreatePixelShader(pixelBytecode->GetBufferPointer(), pixelBytecode->GetBufferSize(), NULL, &ctx->blit.pixelShader);
+	}
+	release(vertexBytecode);
+	release(pixelBytecode);
+	if (FAILED(hr)) {
+		setError("Cannot create the blit shaders", hr);
+		return false;
+	}
+
+	D3D11_BUFFER_DESC bufferDesc;
+	ZeroMemory(&bufferDesc, sizeof(bufferDesc));
+	bufferDesc.ByteWidth = 16;
+	bufferDesc.Usage = D3D11_USAGE_DYNAMIC;
+	bufferDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+	bufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+	hr = ctx->device->CreateBuffer(&bufferDesc, NULL, &ctx->blit.constantBuffer);
+	if (FAILED(hr)) {
+		setError("Cannot create the blit constant buffer", hr);
+		return false;
+	}
+
+	ctx->blit.pointSampler = createBlitSampler(D3D11_FILTER_MIN_MAG_MIP_POINT);
+	ctx->blit.linearSampler = createBlitSampler(D3D11_FILTER_MIN_MAG_MIP_LINEAR);
+
+	D3D11_BLEND_DESC blendDesc;
+	ZeroMemory(&blendDesc, sizeof(blendDesc));
+	blendDesc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+	ctx->device->CreateBlendState(&blendDesc, &ctx->blit.blendState);
+
+	D3D11_DEPTH_STENCIL_DESC depthStencilDesc;
+	ZeroMemory(&depthStencilDesc, sizeof(depthStencilDesc));
+	ctx->device->CreateDepthStencilState(&depthStencilDesc, &ctx->blit.depthStencilState);
+
+	D3D11_RASTERIZER_DESC rasterizerDesc;
+	ZeroMemory(&rasterizerDesc, sizeof(rasterizerDesc));
+	rasterizerDesc.CullMode = D3D11_CULL_NONE;
+	rasterizerDesc.FillMode = D3D11_FILL_SOLID;
+	rasterizerDesc.DepthClipEnable = TRUE;
+	ctx->device->CreateRasterizerState(&rasterizerDesc, &ctx->blit.rasterizerState);
+
+	if (ctx->blit.pointSampler == NULL || ctx->blit.linearSampler == NULL || ctx->blit.blendState == NULL
+			|| ctx->blit.depthStencilState == NULL || ctx->blit.rasterizerState == NULL) {
+		setError("Cannot create the blit pipeline states");
+		return false;
+	}
+
+	ctx->blit.initialized = true;
+	ctx->blit.failed = false;
+
+	return true;
+}
+
+void releaseBlitPipeline() {
+	release(ctx->blit.vertexShader);
+	release(ctx->blit.pixelShader);
+	release(ctx->blit.constantBuffer);
+	release(ctx->blit.pointSampler);
+	release(ctx->blit.linearSampler);
+	release(ctx->blit.blendState);
+	release(ctx->blit.depthStencilState);
+	release(ctx->blit.rasterizerState);
+	ctx->blit.initialized = false;
+	ctx->blit.failed = false;
+}
+
+/* The resource, the render target view and the shader resource view of one side
+ * of a blit. A texture handle of 0 means the back buffer. */
+struct BlitSurface {
+	ID3D11Resource *resource;
+	ID3D11RenderTargetView *renderTargetView;
+	ID3D11ShaderResourceView *shaderResourceView;
+	bool ownsResource;
+};
+
+bool getBlitSurface(int32_t texture, bool depthStencil, BlitSurface &surface) {
+	surface.resource = NULL;
+	surface.renderTargetView = NULL;
+	surface.shaderResourceView = NULL;
+	surface.ownsResource = false;
+
+	if (texture == 0) {
+		ID3D11View *view = depthStencil ? (ID3D11View *) ctx->backBufferDepthStencilView : (ID3D11View *) ctx->backBufferRenderTargetView;
+		if (view == NULL) {
+			return false;
+		}
+		view->GetResource(&surface.resource);
+		surface.ownsResource = true;
+		surface.renderTargetView = depthStencil ? NULL : ctx->backBufferRenderTargetView;
+		return surface.resource != NULL;
+	}
+
+	TextureResource *resource = find(ctx->textures, texture);
+	if (resource == NULL || resource->texture == NULL) {
+		return false;
+	}
+
+	surface.resource = resource->texture;
+	surface.renderTargetView = resource->renderTargetView;
+	surface.shaderResourceView = resource->shaderResourceView;
+
+	return true;
+}
+
+void releaseBlitSurface(BlitSurface &surface) {
+	if (surface.ownsResource) {
+		release(surface.resource);
+	}
+	surface.resource = NULL;
+}
+
 void prepareDraw(D3D11_PRIMITIVE_TOPOLOGY topology) {
 	if (ctx->currentTopology != topology) {
 		ctx->currentTopology = topology;
@@ -692,6 +895,7 @@ void dx11DestroyDevice(void) {
 	}
 	ctx->inputLayouts.clear();
 
+	releaseBlitPipeline();
 	releaseBackBufferViews();
 
 	if (ctx->deviceContext != NULL) {
@@ -975,7 +1179,7 @@ void dx11DeleteTexture(int32_t texture) {
 }
 
 void dx11UpdateTexture(int32_t texture, int32_t level, int32_t x, int32_t y, int32_t width, int32_t height, int32_t rowPitch, int32_t size, const void *data) {
-	if (!hasDevice() || data == NULL) {
+	if (!hasDevice() || data == NULL || width <= 0 || height <= 0) {
 		return;
 	}
 
@@ -984,7 +1188,28 @@ void dx11UpdateTexture(int32_t texture, int32_t level, int32_t x, int32_t y, int
 		return;
 	}
 
-	UINT pitch = rowPitch > 0 ? (UINT) rowPitch : width * getBytesPerPixel(resource->format);
+	UINT bytesPerPixel = getBytesPerPixel(resource->format);
+	UINT pitch = rowPitch > 0 ? (UINT) rowPitch : width * bytesPerPixel;
+
+	/*
+	 * UpdateSubresource() reads one row of pixels at every multiple of the row
+	 * pitch, so it walks up to this many bytes into the caller's buffer. That
+	 * buffer belongs to the Java heap or to a direct ByteBuffer: reading past
+	 * its end has to be refused here, nothing below will catch it.
+	 */
+	UINT rowBytes = width * bytesPerPixel;
+	if (rowBytes > pitch) {
+		// The caller gave a pitch narrower than one row of the texture format,
+		// which happens for the formats storing less than one byte per pixel.
+		// Trust the pitch: it was computed from the data actually being sent.
+		rowBytes = pitch;
+	}
+
+	UINT required = (height - 1) * pitch + rowBytes;
+	if (size > 0 && (UINT) size < required) {
+		setError("The texture data is smaller than the region being updated");
+		return;
+	}
 
 	D3D11_BOX box;
 	box.left = x;
@@ -998,7 +1223,7 @@ void dx11UpdateTexture(int32_t texture, int32_t level, int32_t x, int32_t y, int
 }
 
 void dx11UpdateCompressedTexture(int32_t texture, int32_t level, int32_t width, int32_t height, int32_t size, const void *data) {
-	if (!hasDevice() || data == NULL) {
+	if (!hasDevice() || data == NULL || width <= 0 || height <= 0) {
 		return;
 	}
 
@@ -1015,8 +1240,15 @@ void dx11UpdateCompressedTexture(int32_t texture, int32_t level, int32_t width, 
 
 	UINT blocksPerRow = (width + 3) / 4;
 	UINT pitch = blocksPerRow * blockSize;
+	UINT blockRows = (height + 3) / 4;
 
-	ctx->deviceContext->UpdateSubresource(resource->texture, level, NULL, data, pitch, pitch * ((height + 3) / 4));
+	/* As in dx11UpdateTexture(), never read past the caller's buffer */
+	if (size > 0 && (UINT) size < pitch * blockRows) {
+		setError("The compressed texture data is smaller than the texture level");
+		return;
+	}
+
+	ctx->deviceContext->UpdateSubresource(resource->texture, level, NULL, data, pitch, pitch * blockRows);
 }
 
 void dx11ReadTexture(int32_t texture, int32_t level, int32_t size, void *data) {
@@ -1103,6 +1335,9 @@ void dx11GenerateMipmaps(int32_t texture) {
 }
 
 int32_t dx11GetTextureLevelParameter(int32_t texture, int32_t level, int32_t parameter) {
+	/* The parameters answered here are the same for every mipmap level */
+	(void) level;
+
 	TextureResource *resource = ctx == NULL ? NULL : find(ctx->textures, texture);
 	if (resource == NULL) {
 		return 0;
@@ -1247,34 +1482,147 @@ void dx11ReadPixels(int32_t x, int32_t y, int32_t width, int32_t height, int32_t
 	release(source);
 }
 
-void dx11Blit(int32_t srcX0, int32_t srcY0, int32_t srcX1, int32_t srcY1, int32_t dstX0, int32_t dstY0, int32_t dstX1, int32_t dstY1, int32_t mask, int32_t linearFilter) {
-	if (!hasDevice() || ctx->currentRenderTargetView == NULL) {
+void dx11Blit(int32_t sourceTexture, int32_t destinationTexture, int32_t srcX0, int32_t srcY0, int32_t srcX1, int32_t srcY1, int32_t dstX0, int32_t dstY0, int32_t dstX1, int32_t dstY1, int32_t depthStencil, int32_t linearFilter) {
+	if (!hasDevice()) {
 		return;
 	}
 
-	if ((srcX1 - srcX0) != (dstX1 - dstX0) || (srcY1 - srcY0) != (dstY1 - dstY0)) {
-		/* A scaling blit would need a full screen quad and its own shader,
-		 * which the jpcsp rendering pipeline does not require. */
-		setError("Only a 1:1 blit is supported by the DirectX 11 wrapper");
+	if (sourceTexture == destinationTexture) {
+		setError("A blit cannot read and write the same texture");
 		return;
 	}
 
-	ID3D11Resource *target = NULL;
-	ctx->currentRenderTargetView->GetResource(&target);
-	if (target == NULL) {
+	int32_t sourceWidth = srcX1 - srcX0;
+	int32_t sourceHeight = srcY1 - srcY0;
+	int32_t destinationWidth = dstX1 - dstX0;
+	int32_t destinationHeight = dstY1 - dstY0;
+	if (sourceWidth <= 0 || sourceHeight <= 0 || destinationWidth <= 0 || destinationHeight <= 0) {
 		return;
 	}
 
-	D3D11_BOX box;
-	box.left = srcX0;
-	box.right = srcX1;
-	box.top = srcY0;
-	box.bottom = srcY1;
-	box.front = 0;
-	box.back = 1;
+	BlitSurface source;
+	BlitSurface destination;
+	if (!getBlitSurface(sourceTexture, depthStencil != 0, source)) {
+		setError("The source of the blit is not a valid surface");
+		return;
+	}
+	if (!getBlitSurface(destinationTexture, depthStencil != 0, destination)) {
+		setError("The destination of the blit is not a valid surface");
+		releaseBlitSurface(source);
+		return;
+	}
 
-	ctx->deviceContext->CopySubresourceRegion(target, 0, dstX0, dstY0, 0, target, 0, &box);
-	release(target);
+	bool sameSize = sourceWidth == destinationWidth && sourceHeight == destinationHeight;
+
+	if (depthStencil != 0 || sameSize || source.shaderResourceView == NULL || destination.renderTargetView == NULL) {
+		/*
+		 * A plain copy. It is the only option for a depth/stencil buffer, which
+		 * a pixel shader cannot write, and it is also the fastest path when
+		 * nothing has to be rescaled.
+		 */
+		if (!sameSize) {
+			setError("A rescaling blit needs a sampleable source and a render target destination");
+			releaseBlitSurface(source);
+			releaseBlitSurface(destination);
+			return;
+		}
+
+		/* The destination is very likely the current render target, and
+		 * Direct3D refuses to copy into a bound resource. */
+		ctx->deviceContext->OMSetRenderTargets(0, NULL, NULL);
+
+		D3D11_BOX box;
+		box.left = srcX0;
+		box.right = srcX1;
+		box.top = srcY0;
+		box.bottom = srcY1;
+		box.front = 0;
+		box.back = 1;
+		ctx->deviceContext->CopySubresourceRegion(destination.resource, 0, dstX0, dstY0, 0, source.resource, 0, &box);
+
+		ctx->deviceContext->OMSetRenderTargets(1, &ctx->currentRenderTargetView, ctx->currentDepthStencilView);
+
+		releaseBlitSurface(source);
+		releaseBlitSurface(destination);
+		return;
+	}
+
+	/* A rescaling copy: draw the source as a full screen triangle */
+	if (!initBlitPipeline()) {
+		releaseBlitSurface(source);
+		releaseBlitSurface(destination);
+		return;
+	}
+
+	D3D11_TEXTURE2D_DESC sourceDesc;
+	ZeroMemory(&sourceDesc, sizeof(sourceDesc));
+	{
+		ID3D11Texture2D *sourceTexture2D = NULL;
+		if (SUCCEEDED(source.resource->QueryInterface(__uuidof(ID3D11Texture2D), (void **) &sourceTexture2D))) {
+			sourceTexture2D->GetDesc(&sourceDesc);
+			release(sourceTexture2D);
+		}
+	}
+	if (sourceDesc.Width == 0 || sourceDesc.Height == 0) {
+		setError("Cannot determine the size of the blit source");
+		releaseBlitSurface(source);
+		releaseBlitSurface(destination);
+		return;
+	}
+
+	float constants[4];
+	constants[0] = (float) sourceWidth / (float) sourceDesc.Width;
+	constants[1] = (float) sourceHeight / (float) sourceDesc.Height;
+	constants[2] = (float) srcX0 / (float) sourceDesc.Width;
+	constants[3] = (float) srcY0 / (float) sourceDesc.Height;
+
+	D3D11_MAPPED_SUBRESOURCE mapped;
+	if (SUCCEEDED(ctx->deviceContext->Map(ctx->blit.constantBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+		memcpy(mapped.pData, constants, sizeof(constants));
+		ctx->deviceContext->Unmap(ctx->blit.constantBuffer, 0);
+	}
+
+	ID3D11ShaderResourceView *nullShaderResourceView = NULL;
+	ID3D11SamplerState *sampler = linearFilter != 0 ? ctx->blit.linearSampler : ctx->blit.pointSampler;
+	const float blendFactor[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+
+	ctx->deviceContext->OMSetRenderTargets(1, &destination.renderTargetView, NULL);
+
+	D3D11_VIEWPORT viewport;
+	viewport.TopLeftX = (float) dstX0;
+	viewport.TopLeftY = (float) dstY0;
+	viewport.Width = (float) destinationWidth;
+	viewport.Height = (float) destinationHeight;
+	viewport.MinDepth = 0.0f;
+	viewport.MaxDepth = 1.0f;
+	ctx->deviceContext->RSSetViewports(1, &viewport);
+
+	ctx->deviceContext->OMSetBlendState(ctx->blit.blendState, blendFactor, 0xFFFFFFFF);
+	ctx->deviceContext->OMSetDepthStencilState(ctx->blit.depthStencilState, 0);
+	ctx->deviceContext->RSSetState(ctx->blit.rasterizerState);
+	ctx->deviceContext->IASetInputLayout(NULL);
+	ctx->deviceContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	ctx->deviceContext->VSSetShader(ctx->blit.vertexShader, NULL, 0);
+	ctx->deviceContext->PSSetShader(ctx->blit.pixelShader, NULL, 0);
+	ctx->deviceContext->GSSetShader(NULL, NULL, 0);
+	ctx->deviceContext->HSSetShader(NULL, NULL, 0);
+	ctx->deviceContext->DSSetShader(NULL, NULL, 0);
+	ctx->deviceContext->VSSetConstantBuffers(0, 1, &ctx->blit.constantBuffer);
+	ctx->deviceContext->PSSetShaderResources(0, 1, &source.shaderResourceView);
+	ctx->deviceContext->PSSetSamplers(0, 1, &sampler);
+
+	ctx->deviceContext->Draw(3, 0);
+
+	/* Unbind the source, it may be bound as a render target again right after */
+	ctx->deviceContext->PSSetShaderResources(0, 1, &nullShaderResourceView);
+	ctx->deviceContext->OMSetRenderTargets(1, &ctx->currentRenderTargetView, ctx->currentDepthStencilView);
+
+	/* The caller re-pushes the whole pipeline state, but the topology is cached
+	 * on this side and has just been changed behind its back. */
+	ctx->currentTopology = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
+
+	releaseBlitSurface(source);
+	releaseBlitSurface(destination);
 }
 
 /*

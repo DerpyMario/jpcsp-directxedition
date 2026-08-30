@@ -117,6 +117,9 @@ import org.lwjgl.opengl.awt.GLData;
 import org.lwjgl.opengl.awt.PlatformLinuxGLCanvas;
 import org.lwjgl.opengl.awt.PlatformWin32GLCanvas;
 import org.lwjgl.opengl.awt.AWTGLCanvas;
+import org.lwjgl.system.Platform;
+
+import com.sun.jna.Native;
 
 public class sceDisplay extends HLEModule {
     public static Logger log = Modules.getLogger("sceDisplay");
@@ -130,14 +133,103 @@ public class sceDisplay extends HLEModule {
             super(glData);
         }
 
+		/**
+		 * The native handle of the window backing this canvas.
+		 *
+		 * It normally comes from the LWJGL platform canvas, which owns it since
+		 * it created the OpenGL context. With the DirectX 11 renderer there is
+		 * no OpenGL context at all, so ask AWT for the handle instead.
+		 */
 		public long getDisplayWindow() {
+			// The platform canvas exists from the beginning but only knows the
+			// window once it has created the OpenGL context on it
 			if (platformCanvas instanceof PlatformWin32GLCanvas) {
-				return ((PlatformWin32GLCanvas) platformCanvas).hwnd;
+				long hwnd = ((PlatformWin32GLCanvas) platformCanvas).hwnd;
+				if (hwnd != 0L) {
+					return hwnd;
+				}
 			}
 			if (platformCanvas instanceof PlatformLinuxGLCanvas) {
-				return ((PlatformLinuxGLCanvas) platformCanvas).display;
+				long display = ((PlatformLinuxGLCanvas) platformCanvas).display;
+				if (display != 0L) {
+					return display;
+				}
 			}
-			return 0L;
+
+			return getNativeWindowHandle();
+		}
+
+		private long getNativeWindowHandle() {
+			if (Platform.get() != Platform.WINDOWS || !isDisplayable()) {
+				return 0L;
+			}
+
+			try {
+				return Native.getComponentID(this);
+			} catch (Throwable e) {
+				log.error("Cannot retrieve the native window handle of the display canvas", e);
+				return 0L;
+			}
+		}
+
+		/**
+		 * Render one frame.
+		 *
+		 * With the DirectX 11 renderer, Direct3D 11 draws into this window
+		 * through its own swap chain: no OpenGL context is created and the
+		 * OpenGL driver is never loaded into the process. This is what makes the
+		 * DirectX 11 renderer immune to the OpenGL driver bugs it exists for.
+		 */
+		@Override
+		public void render() {
+			if (isUsingDirectX11Canvas()) {
+				if (!initCalled) {
+					initDirectX11();
+					initCalled = true;
+				}
+				paintGL();
+				return;
+			}
+
+			super.render();
+		}
+
+		/**
+		 * The Direct3D 11 counterpart of initGL(): jpcsp refuses to start a game
+		 * when the display could not be initialized, so the same flag has to be
+		 * set on this path.
+		 */
+		private void initDirectX11() {
+			initGLcalled = true;
+
+			RenderingEngineDirectX11 directX11 = RenderingEngineFactory.getDirectX11RenderingEngine();
+			openGLversion = directX11 == null ? "Direct3D 11" : directX11.getVersion();
+			log.info(String.format("Display initialized with %s", openGLversion));
+		}
+
+		/**
+		 * @return true when this canvas is driven by Direct3D 11 instead of OpenGL
+		 */
+		private boolean isUsingDirectX11Canvas() {
+			if (directX11Unavailable || !isUsingDirectX11Renderer()) {
+				return false;
+			}
+
+			long displayWindow = getDisplayWindow();
+			if (displayWindow == 0L) {
+				// The canvas has no native window yet, try again at the next repaint
+				return false;
+			}
+
+			if (!RenderingEngineFactory.prepareDirectX11RenderingEngine(displayWindow, getWidth(), getHeight())) {
+				// Remember the failure, otherwise every single frame would retry
+				// to create a Direct3D 11 device which cannot be created
+				directX11Unavailable = true;
+				log.warn("The DirectX 11 renderer could not be initialized, rendering with OpenGL instead");
+				return false;
+			}
+
+			return true;
 		}
 
 		public long getDisplayDrawable() {
@@ -181,6 +273,8 @@ public class sceDisplay extends HLEModule {
                 startModules = true;
                 re = null;
                 reDisplay = null;
+                // The Direct3D 11 device belongs to the pipeline being rebuilt
+                RenderingEngineFactory.releaseDirectX11RenderingEngine();
                 resetDisplaySettings = false;
 
                 saveGEToTexture = Settings.getInstance().readBool("emu.enablegetexture");
@@ -236,6 +330,10 @@ public class sceDisplay extends HLEModule {
 
             if (!isStarted) {
                 reDisplay.clear(0.0f, 0.0f, 0.0f, 0.0f);
+                if (directX11 != null) {
+                    // Nothing is running yet, show the cleared Direct3D 11 back buffer
+                    directX11.present(false);
+                }
                 unlockDisplay();
                 return;
             }
@@ -430,6 +528,8 @@ public class sceDisplay extends HLEModule {
     private boolean saveGEToTexture = false;
     private boolean useSoftwareRenderer = false;
     private boolean useDirectX11Renderer = false;
+    // Set when Direct3D 11 has been requested but could not be initialized
+    private boolean directX11Unavailable = false;
     private boolean saveStencilToMemory = false;
     private static final boolean useDebugGL = false;
     private static final String resizeScaleFactorSettings = "emu.graphics.resizeScaleFactor";
@@ -1233,6 +1333,8 @@ public class sceDisplay extends HLEModule {
 
     public void setUseDirectX11Renderer(boolean useDirectX11Renderer) {
         this.useDirectX11Renderer = useDirectX11Renderer;
+        // Give Direct3D 11 a new chance, e.g. after installing the wrapper library
+        directX11Unavailable = false;
 
         if (isStarted) {
             resetDisplaySettings = true;
